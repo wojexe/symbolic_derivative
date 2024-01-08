@@ -1,18 +1,13 @@
-import Control.Monad
-import Text.Parsec
-import Text.Parsec.Expr
-import Text.Parsec.Language (emptyDef)
-import Text.Parsec.String (Parser)
-import Text.Parsec.Token qualified as T
-
 main :: IO ()
 main = do
   putStrLn "Enter math expression to be derived (possible variables: x, y, z):"
   input <- getLine
 
-  when (hasUnmatchedParens input) $ error "The math expression you provided has unmatched parentheses"
+  if hasUnmatchedParens input
+    then error "The math expression you provided has unmatched parentheses"
+    else return ()
 
-  case parseExpr (squeeze input) of
+  case parse (squeeze input) of
     Left err -> putStrLn $ "Error while parsing: " ++ show err
     Right expr -> do
       putStrLn $ "Parsed expression: " ++ show expr
@@ -109,48 +104,166 @@ diff c (Exp a) = Mul (diff c a) (Exp a)
 diff c (Log a) = Div (diff c a) a
 
 --
+-- TOKENIZATION
+--
+
+operators = "+-*/^"
+
+variables = "xyz"
+
+digits = "0123456789"
+
+characters = "abcdefghijklmnopqrstuvwxyz"
+
+functions = ["sin", "cos", "tg", "exp", "ln"]
+
+readNumber :: String -> Either String (Double, String)
+readNumber s =
+  if head n == '0' && length n > 1
+    then Left "Numbers are not allowed to begin with 0"
+    else Right (read n :: Double, drop (length n) s)
+  where
+    n = takeWhile (`elem` '.' : digits) s
+
+startsWith :: String -> String -> Bool
+startsWith "" _ = False
+startsWith _ "" = True
+startsWith str with = (head str == head with) && startsWith (tail str) (tail with)
+
+readFunction :: String -> Either String (String, String)
+readFunction s =
+  if null funs
+    then Left $ "Could not match function '" ++ takeWhile (`elem` characters) s ++ "'"
+    else Right (fun, rest)
+  where
+    funs = filter (\x -> s `startsWith` x) functions -- will match exactly one at most
+    fun = head funs
+    rest = drop (length fun) s
+
+data Token where
+  TOp :: Char -> Token
+  TVar :: Char -> Token
+  TNum :: Double -> Token
+  TFun :: String -> Token
+  TLParen :: Token
+  TRParen :: Token
+  deriving (Eq)
+
+instance Show Token where
+  show (TOp c) = show c
+  show (TVar c) = show c
+  show (TNum n) = show n
+  show (TFun fun) = show fun
+  show TLParen = show '('
+  show TRParen = show ')'
+
+tokenize :: String -> Either String [Token]
+tokenize [] = Right []
+tokenize (c : cs)
+  | c `elem` operators = (TOp c :) <$> tokenize cs
+  | c `elem` variables = (TVar c :) <$> tokenize cs
+  | c `elem` digits =
+      case readNumber (c : cs) of
+        Right (num, rest) -> (TNum num :) <$> tokenize rest
+        Left err -> Left err
+  | c == '(' = (TLParen :) <$> tokenize cs
+  | c == ')' = (TRParen :) <$> tokenize cs
+  | otherwise =
+      case readFunction (c : cs) of
+        Right (fun, rest) -> (TFun fun :) <$> tokenize rest
+        Left err -> Left err
+
+-- Little explainer:
+-- <$> is the infix notation of fmap, so:
+--   c `elem` operators = (TOp c :) <$> tokenize cs
+-- is same as:
+--   c `elem` operators = fmap (TOp c :) (tokenize cs)
+-- or in other words:
+--   c `elem` operators =
+--     case tokenize cs of
+--       Right tokens -> Right $ TOp c : tokens 
+--       Left err -> Left err
+
+--
 -- PARSING
 --
 
-lexer = T.makeTokenParser emptyDef
+parseFunction :: String -> [Token] -> Either String (Expr Double, [Token])
+parseFunction fun tokens = case parseExpr nextTokens of
+  Right (expr, TRParen : rest') -> case fun of
+    "sin" -> Right (Sin expr, rest')
+    "cos" -> Right (Cos expr, rest')
+    "tg" -> Right (Tan expr, rest')
+    "exp" -> Right (Exp expr, rest')
+    "ln" -> Right (Log expr, rest')
+  Right (a, b) -> Left $ "Missing closing parenthesis for function '" ++ fun ++ "'"
+  Left err -> Left err
+  where
+    nextTokens = tail tokens -- make function parens exclusive for that function (don't parse them in parseExpr)
 
-parens = T.parens lexer
+parseFactor :: [Token] -> Either String (Expr Double, [Token])
+parseFactor tokens = case tokens of
+  (TNum n : rest) -> Right (Const n, rest)
+  (TVar 'x' : rest) -> Right (Var 'x', rest)
+  (TVar 'y' : rest) -> Right (Var 'y', rest)
+  (TVar 'z' : rest) -> Right (Var 'z', rest)
+  (TFun fun : rest) -> parseFunction fun rest
+  (TLParen : rest) ->
+    case parseExpr rest of
+      Right (expr, TRParen : rest') -> Right (expr, rest')
+      Right (_, _) -> Left "Missing closing parenthesis"
+      Left err -> Left err
+  _ -> Left "Unexpected token in factor"
 
-reservedOp = T.reservedOp lexer
+parsePower :: [Token] -> Either String (Expr Double, [Token])
+parsePower tokens = do
+  (base, rest) <- parseFactor tokens
+  parsePower' base rest
 
-reserved = T.reserved lexer
+parsePower' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parsePower' base tokens = case tokens of
+  (TOp '^' : rest) -> do
+    (exponent, rest') <- parseFactor rest
+    parsePower' (Pow base exponent) rest'
+  _ -> Right (base, tokens)
 
-number = do
-  num <- T.naturalOrFloat lexer
-  return $ case num of
-    Left natural -> fromInteger natural
-    Right floating -> floating
+parseTerm :: [Token] -> Either String (Expr Double, [Token])
+parseTerm tokens = do
+  (fact, rest) <- parsePower tokens
+  parseTerm' fact rest
 
-function name constructor =
-  reserved name *> fmap constructor (parens expr)
+parseTerm' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parseTerm' expr tokens = case tokens of
+  (TOp '*' : rest) -> do
+    (fact, rest') <- parsePower rest
+    parseTerm' (Mul expr fact) rest'
+  (TOp '/' : rest) -> do
+    (fact, rest') <- parsePower rest
+    parseTerm' (Div expr fact) rest'
+  _ -> Right (expr, tokens)
 
-expr :: Parser (Expr Double)
-expr = buildExpressionParser table terms
+parseExpr :: [Token] -> Either String (Expr Double, [Token])
+parseExpr tokens = do
+  (term, rest) <- parseTerm tokens
+  parseExpr' term rest
 
-table =
-  [ [Prefix (reservedOp "-" >> return Neg)],
-    [Infix (reservedOp "^" >> return Pow) AssocRight],
-    [Infix (reservedOp "*" >> return Mul) AssocLeft, Infix (reservedOp "/" >> return Div) AssocLeft],
-    [Infix (reservedOp "+" >> return Add) AssocLeft, Infix (reservedOp "-" >> return (\a b -> Add a (Neg b))) AssocLeft]
-  ]
+parseExpr' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parseExpr' expr tokens = case tokens of
+  (TOp '+' : rest) -> do
+    (term, rest') <- parseTerm rest
+    parseExpr' (Add expr term) rest'
+  (TOp '-' : rest) -> do
+    (term, rest') <- parseTerm rest
+    parseExpr' (Add expr (Neg term)) rest'
+  _ -> Right (expr, tokens)
 
-terms =
-  parens expr
-    <|> fmap Var (oneOf "xyz")
-    <|> fmap Const number
-    <|> function "sin" Sin
-    <|> function "cos" Cos
-    <|> function "tg" Tan
-    <|> function "exp" Exp
-    <|> function "ln" Log
-
-parseExpr :: String -> Either ParseError (Expr Double)
-parseExpr = parse (expr <* eof) "<stdin>"
+parse :: String -> Either String (Expr Double)
+parse s = case tokenize s of
+  Right tokens -> case parseExpr tokens of
+    Right (expr, []) -> Right expr
+    Right (_, tokens) -> Left $ "Unused tokens: " ++ show tokens
+    Left err -> Left err
+  Left err -> Left err
 
 --
 -- SIMPLIFICATIONS
