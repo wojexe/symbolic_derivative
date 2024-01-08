@@ -1,5 +1,3 @@
-import Debug.Trace (trace)
-
 main :: IO ()
 main = do
   putStrLn "Enter math expression to be derived (possible variables: x, y, z):"
@@ -115,6 +113,8 @@ variables = "xyz"
 
 digits = "0123456789"
 
+characters = "abcdefghijklmnopqrstuvwxyz"
+
 functions = ["sin", "cos", "tg", "exp", "ln"]
 
 readNumber :: String -> Either String (Double, String)
@@ -133,7 +133,7 @@ startsWith str with = (head str == head with) && startsWith (tail str) (tail wit
 readFunction :: String -> Either String (String, String)
 readFunction s =
   if null funs
-    then Left "Could not match function"
+    then Left $ "Could not match function '" ++ takeWhile (`elem` characters) s ++ "'"
     else Right (fun, rest)
   where
     funs = filter (\x -> s `startsWith` x) functions -- will match exactly one at most
@@ -160,37 +160,32 @@ instance Show Token where
 tokenize :: String -> Either String [Token]
 tokenize [] = Right []
 tokenize (c : cs)
-  | c `elem` operators =
-      case trace ("Tokenize TOp: " ++ show c) $ tokenize cs of
-        Right tokens -> Right $ TOp c : tokens
-        Left err -> Left err
-  | c `elem` variables =
-      case trace ("Tokenize TVar: " ++ show c) (tokenize cs) of
-        Right tokens -> Right $ TVar c : tokens
-        Left err -> Left err
+  | c `elem` operators = (TOp c :) <$> tokenize cs
+  | c `elem` variables = (TVar c :) <$> tokenize cs
   | c `elem` digits =
       case readNumber (c : cs) of
-        Right (num, rest) -> case trace ("Tokenize TNum: " ++ show num) (tokenize rest) of
-          Right tokens -> Right $ TNum num : tokens
-          Left err -> Left err
+        Right (num, rest) -> (TNum num :) <$> tokenize rest
         Left err -> Left err
-  | c == '(' =
-      case trace ("Tokenize TLParen: " ++ show c) (tokenize cs) of
-        Right tokens -> Right $ TLParen : tokens
-        Left err -> Left err
-  | c == ')' =
-      case trace ("Tokenize TRParen: " ++ show c) (tokenize cs) of
-        Right tokens -> Right $ TRParen : tokens
-        Left err -> Left err
+  | c == '(' = (TLParen :) <$> tokenize cs
+  | c == ')' = (TRParen :) <$> tokenize cs
   | otherwise =
       case readFunction (c : cs) of
-        Right (fun, rest) -> case trace ("Tokenize TFun: " ++ show fun) (tokenize rest) of
-          Right tokens -> Right $ TFun fun : tokens
-          Left err -> Left err
+        Right (fun, rest) -> (TFun fun :) <$> tokenize rest
         Left err -> Left err
 
+-- Little explainer:
+-- <$> is the infix notation of fmap, so:
+--   c `elem` operators = (TOp c :) <$> tokenize cs
+-- is same as:
+--   c `elem` operators = fmap (TOp c :) (tokenize cs)
+-- or in other words:
+--   c `elem` operators =
+--     case tokenize cs of
+--       Right tokens -> Right $ TOp c : tokens 
+--       Left err -> Left err
+
 --
--- PARSING (NO PARSEC)
+-- PARSING
 --
 
 parseFunction :: String -> [Token] -> Either String (Expr Double, [Token])
@@ -222,15 +217,15 @@ parseFactor tokens = case tokens of
 
 parsePower :: [Token] -> Either String (Expr Double, [Token])
 parsePower tokens = do
-    (base, rest) <- parseFactor tokens
-    parsePower' base rest
+  (base, rest) <- parseFactor tokens
+  parsePower' base rest
 
 parsePower' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
 parsePower' base tokens = case tokens of
-    (TOp '^' : rest) -> do
-        (exponent, rest') <- parseFactor rest
-        parsePower' (Pow base exponent) rest'
-    _ -> Right (base, tokens)
+  (TOp '^' : rest) -> do
+    (exponent, rest') <- parseFactor rest
+    parsePower' (Pow base exponent) rest'
+  _ -> Right (base, tokens)
 
 parseTerm :: [Token] -> Either String (Expr Double, [Token])
 parseTerm tokens = do
