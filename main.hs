@@ -1,18 +1,15 @@
-import Control.Monad
-import Text.Parsec
-import Text.Parsec.Expr
-import Text.Parsec.Language (emptyDef)
-import Text.Parsec.String (Parser)
-import Text.Parsec.Token qualified as T
+import Debug.Trace (trace)
 
 main :: IO ()
 main = do
   putStrLn "Enter math expression to be derived (possible variables: x, y, z):"
   input <- getLine
 
-  when (hasUnmatchedParens input) $ error "The math expression you provided has unmatched parentheses"
+  if hasUnmatchedParens input
+    then error "The math expression you provided has unmatched parentheses"
+    else return ()
 
-  case parseExpr (squeeze input) of
+  case parse (squeeze input) of
     Left err -> putStrLn $ "Error while parsing: " ++ show err
     Right expr -> do
       putStrLn $ "Parsed expression: " ++ show expr
@@ -109,48 +106,169 @@ diff c (Exp a) = Mul (diff c a) (Exp a)
 diff c (Log a) = Div (diff c a) a
 
 --
--- PARSING
+-- TOKENIZATION
 --
 
-lexer = T.makeTokenParser emptyDef
+operators = "+-*/^"
 
-parens = T.parens lexer
+variables = "xyz"
 
-reservedOp = T.reservedOp lexer
+digits = "0123456789"
 
-reserved = T.reserved lexer
+functions = ["sin", "cos", "tg", "exp", "ln"]
 
-number = do
-  num <- T.naturalOrFloat lexer
-  return $ case num of
-    Left natural -> fromInteger natural
-    Right floating -> floating
+readNumber :: String -> Either String (Double, String)
+readNumber s =
+  if head n == '0' && length n > 1
+    then Left "Numbers are not allowed to begin with 0"
+    else Right (read n :: Double, drop (length n) s)
+  where
+    n = takeWhile (`elem` '.' : digits) s
 
-function name constructor =
-  reserved name *> fmap constructor (parens expr)
+startsWith :: String -> String -> Bool
+startsWith "" _ = False
+startsWith _ "" = True
+startsWith str with = (head str == head with) && startsWith (tail str) (tail with)
 
-expr :: Parser (Expr Double)
-expr = buildExpressionParser table terms
+readFunction :: String -> Either String (String, String)
+readFunction s =
+  if null funs
+    then Left "Could not match function"
+    else Right (fun, rest)
+  where
+    funs = filter (\x -> s `startsWith` x) functions -- will match exactly one at most
+    fun = head funs
+    rest = drop (length fun) s
 
-table =
-  [ [Prefix (reservedOp "-" >> return Neg)],
-    [Infix (reservedOp "^" >> return Pow) AssocRight],
-    [Infix (reservedOp "*" >> return Mul) AssocLeft, Infix (reservedOp "/" >> return Div) AssocLeft],
-    [Infix (reservedOp "+" >> return Add) AssocLeft, Infix (reservedOp "-" >> return (\a b -> Add a (Neg b))) AssocLeft]
-  ]
+data Token where
+  TOp :: Char -> Token
+  TVar :: Char -> Token
+  TNum :: Double -> Token
+  TFun :: String -> Token
+  TLParen :: Token
+  TRParen :: Token
+  deriving (Eq)
 
-terms =
-  parens expr
-    <|> fmap Var (oneOf "xyz")
-    <|> fmap Const number
-    <|> function "sin" Sin
-    <|> function "cos" Cos
-    <|> function "tg" Tan
-    <|> function "exp" Exp
-    <|> function "ln" Log
+instance Show Token where
+  show (TOp c) = show c
+  show (TVar c) = show c
+  show (TNum n) = show n
+  show (TFun fun) = show fun
+  show TLParen = show '('
+  show TRParen = show ')'
 
-parseExpr :: String -> Either ParseError (Expr Double)
-parseExpr = parse (expr <* eof) "<stdin>"
+tokenize :: String -> Either String [Token]
+tokenize [] = Right []
+tokenize (c : cs)
+  | c `elem` operators =
+      case trace ("Tokenize TOp: " ++ show c) $ tokenize cs of
+        Right tokens -> Right $ TOp c : tokens
+        Left err -> Left err
+  | c `elem` variables =
+      case trace ("Tokenize TVar: " ++ show c) (tokenize cs) of
+        Right tokens -> Right $ TVar c : tokens
+        Left err -> Left err
+  | c `elem` digits =
+      case readNumber (c : cs) of
+        Right (num, rest) -> case trace ("Tokenize TNum: " ++ show num) (tokenize rest) of
+          Right tokens -> Right $ TNum num : tokens
+          Left err -> Left err
+        Left err -> Left err
+  | c == '(' =
+      case trace ("Tokenize TLParen: " ++ show c) (tokenize cs) of
+        Right tokens -> Right $ TLParen : tokens
+        Left err -> Left err
+  | c == ')' =
+      case trace ("Tokenize TRParen: " ++ show c) (tokenize cs) of
+        Right tokens -> Right $ TRParen : tokens
+        Left err -> Left err
+  | otherwise =
+      case readFunction (c : cs) of
+        Right (fun, rest) -> case trace ("Tokenize TFun: " ++ show fun) (tokenize rest) of
+          Right tokens -> Right $ TFun fun : tokens
+          Left err -> Left err
+        Left err -> Left err
+
+--
+-- PARSING (NO PARSEC)
+--
+
+parseFunction :: String -> [Token] -> Either String (Expr Double, [Token])
+parseFunction fun tokens = case parseExpr nextTokens of
+  Right (expr, TRParen : rest') -> case fun of
+    "sin" -> Right (Sin expr, rest')
+    "cos" -> Right (Cos expr, rest')
+    "tg" -> Right (Tan expr, rest')
+    "exp" -> Right (Exp expr, rest')
+    "ln" -> Right (Log expr, rest')
+  Right (a, b) -> Left $ "Missing closing parenthesis for function '" ++ fun ++ "'"
+  Left err -> Left err
+  where
+    nextTokens = tail tokens -- make function parens exclusive for that function (don't parse them in parseExpr)
+
+parseFactor :: [Token] -> Either String (Expr Double, [Token])
+parseFactor tokens = case tokens of
+  (TNum n : rest) -> Right (Const n, rest)
+  (TVar 'x' : rest) -> Right (Var 'x', rest)
+  (TVar 'y' : rest) -> Right (Var 'y', rest)
+  (TVar 'z' : rest) -> Right (Var 'z', rest)
+  (TFun fun : rest) -> parseFunction fun rest
+  (TLParen : rest) ->
+    case parseExpr rest of
+      Right (expr, TRParen : rest') -> Right (expr, rest')
+      Right (_, _) -> Left "Missing closing parenthesis"
+      Left err -> Left err
+  _ -> Left "Unexpected token in factor"
+
+parsePower :: [Token] -> Either String (Expr Double, [Token])
+parsePower tokens = do
+    (base, rest) <- parseFactor tokens
+    parsePower' base rest
+
+parsePower' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parsePower' base tokens = case tokens of
+    (TOp '^' : rest) -> do
+        (exponent, rest') <- parseFactor rest
+        parsePower' (Pow base exponent) rest'
+    _ -> Right (base, tokens)
+
+parseTerm :: [Token] -> Either String (Expr Double, [Token])
+parseTerm tokens = do
+  (fact, rest) <- parsePower tokens
+  parseTerm' fact rest
+
+parseTerm' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parseTerm' expr tokens = case tokens of
+  (TOp '*' : rest) -> do
+    (fact, rest') <- parsePower rest
+    parseTerm' (Mul expr fact) rest'
+  (TOp '/' : rest) -> do
+    (fact, rest') <- parsePower rest
+    parseTerm' (Div expr fact) rest'
+  _ -> Right (expr, tokens)
+
+parseExpr :: [Token] -> Either String (Expr Double, [Token])
+parseExpr tokens = do
+  (term, rest) <- parseTerm tokens
+  parseExpr' term rest
+
+parseExpr' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
+parseExpr' expr tokens = case tokens of
+  (TOp '+' : rest) -> do
+    (term, rest') <- parseTerm rest
+    parseExpr' (Add expr term) rest'
+  (TOp '-' : rest) -> do
+    (term, rest') <- parseTerm rest
+    parseExpr' (Add expr (Neg term)) rest'
+  _ -> Right (expr, tokens)
+
+parse :: String -> Either String (Expr Double)
+parse s = case tokenize s of
+  Right tokens -> case parseExpr tokens of
+    Right (expr, []) -> Right expr
+    Right (_, tokens) -> Left $ "Unused tokens: " ++ show tokens
+    Left err -> Left err
+  Left err -> Left err
 
 --
 -- SIMPLIFICATIONS
