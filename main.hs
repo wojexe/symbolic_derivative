@@ -181,7 +181,7 @@ tokenize (c : cs)
 -- or in other words:
 --   c `elem` operators =
 --     case tokenize cs of
---       Right tokens -> Right $ TOp c : tokens 
+--       Right tokens -> Right $ TOp c : tokens
 --       Left err -> Left err
 
 --
@@ -203,6 +203,7 @@ parseFunction fun tokens = case parseExpr nextTokens of
 
 parseFactor :: [Token] -> Either String (Expr Double, [Token])
 parseFactor tokens = case tokens of
+  (TOp '-' : TNum n : rest) -> Right (Neg $ Const n, rest)
   (TNum n : rest) -> Right (Const n, rest)
   (TVar 'x' : rest) -> Right (Var 'x', rest)
   (TVar 'y' : rest) -> Right (Var 'y', rest)
@@ -222,9 +223,11 @@ parsePower tokens = do
 
 parsePower' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
 parsePower' base tokens = case tokens of
-  (TOp '^' : rest) -> do
-    (exponent, rest') <- parseFactor rest
-    parsePower' (Pow base exponent) rest'
+  (TOp '^' : rest)
+    | head rest `elem` [TOp op | op <- operators] -> Left "Binary operator '^' cannot be followed by another operator"
+    | otherwise -> do
+        (exponent, rest') <- parseFactor rest
+        parsePower' (Pow base exponent) rest'
   _ -> Right (base, tokens)
 
 parseTerm :: [Token] -> Either String (Expr Double, [Token])
@@ -234,12 +237,16 @@ parseTerm tokens = do
 
 parseTerm' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
 parseTerm' expr tokens = case tokens of
-  (TOp '*' : rest) -> do
-    (fact, rest') <- parsePower rest
-    parseTerm' (Mul expr fact) rest'
-  (TOp '/' : rest) -> do
-    (fact, rest') <- parsePower rest
-    parseTerm' (Div expr fact) rest'
+  (TOp '*' : rest)
+    | head rest `elem` [TOp op | op <- operators] -> Left "Binary operator '*' cannot be followed by another operator"
+    | otherwise -> do
+        (fact, rest') <- parsePower rest
+        parseTerm' (Mul expr fact) rest'
+  (TOp '/' : rest)
+    | head rest `elem` [TOp op | op <- operators] -> Left "Binary operator '/' cannot be followed by another operator"
+    | otherwise -> do
+        (fact, rest') <- parsePower rest
+        parseTerm' (Div expr fact) rest'
   _ -> Right (expr, tokens)
 
 parseExpr :: [Token] -> Either String (Expr Double, [Token])
@@ -249,12 +256,16 @@ parseExpr tokens = do
 
 parseExpr' :: Expr Double -> [Token] -> Either String (Expr Double, [Token])
 parseExpr' expr tokens = case tokens of
-  (TOp '+' : rest) -> do
-    (term, rest') <- parseTerm rest
-    parseExpr' (Add expr term) rest'
-  (TOp '-' : rest) -> do
-    (term, rest') <- parseTerm rest
-    parseExpr' (Add expr (Neg term)) rest'
+  (TOp '+' : rest)
+    | head rest `elem` [TOp op | op <- operators] -> Left "Binary operator '+' cannot be followed by another operator"
+    | otherwise -> do
+        (term, rest') <- parseTerm rest
+        parseExpr' (Add expr term) rest'
+  (TOp '-' : rest)
+    | head rest `elem` [TOp op | op <- operators] -> Left "Binary operator '-' cannot be followed by another operator"
+    | otherwise -> do
+        (term, rest') <- parseTerm rest
+        parseExpr' (Add expr (Neg term)) rest'
   _ -> Right (expr, tokens)
 
 parse :: String -> Either String (Expr Double)
@@ -287,6 +298,7 @@ s (Div (Neg a) b) = Neg $ Div a b
 s (Div a (Neg b)) = Neg $ Div a b
 --
 s (Add (Const a) (Const b)) = Const (a + b)
+s (Add (Neg (Const a)) (Const b)) = Const (b - a)
 s (Add (Const a) (Neg (Const b))) = Const (a - b)
 s (Add a (Const 0)) = a
 s (Add (Const 0) b) = b
