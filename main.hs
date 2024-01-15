@@ -80,28 +80,29 @@ diff c (Const _) = Const 0
 diff c (Var ch)
   | c == ch = Const 1
   | otherwise = Const 0
-diff c (Neg a) = Neg (diff c a)
-diff c (Add a b) = Add (diff c a) (diff c b)
+diff c (Neg f) = Neg (diff c f)
+-- f(x) + g(x) -> f'(x) + g'(x)
+diff c (Add f g) = Add (diff c f) (diff c g)
 -- f(x) * g(x) -> f'(x) * g(x) + f(x) * g'(x)
-diff c (Mul a b) = Add (Mul (diff c a) b) (Mul a (diff c b))
+diff c (Mul f g) = Add (Mul (diff c f) g) (Mul f (diff c g))
 -- f(x) / g(x) -> ( f'(x) * g(x) - f(x) * g'(x) ) / g^2(x)
-diff c (Div a b) = Div (Add (Mul (diff c a) b) (Neg (Mul a (diff c b)))) (Pow b (Const 2))
+diff c (Div f g) = Div (Add (Mul (diff c f) g) (Neg (Mul f (diff c g)))) (Pow g (Const 2))
 -- a^f(x) -> a^f(x) * log(a) * f'(x)
-diff c (Pow (Const a) b) = Mul (Mul (Pow (Const a) b) (Const (log a))) (diff c b)
+diff c (Pow (Const a) f) = Mul (Mul (Pow (Const a) f) (Const (log a))) (diff c f)
 -- f(x)^b -> b * f(x) ^ ( b - 1 ) * f'(x)
-diff c (Pow a (Const b)) = Mul (Mul (Const b) (Pow a (Const (b - 1)))) (diff c a)
+diff c (Pow f (Const b)) = Mul (Mul (Const b) (Pow f (Const (b - 1)))) (diff c f)
 -- f(x) ^ g(x) -> f(x) ^ (g(x) - 1) * (g(x) * f'(x) + f(x) * log(f(x)) * g'(x))
-diff c (Pow a b) = Mul (Pow a (Add b (Neg (Const 1)))) (Add (Mul b (diff c a)) (Mul a (Mul (Log a) (diff c b))))
+diff c (Pow f g) = Mul (Pow f (Add g (Neg (Const 1)))) (Add (Mul g (diff c f)) (Mul f (Mul (Log f) (diff c g))))
 -- sin(f(x)) -> f'(x) * cos(f(x))
-diff c (Sin a) = Mul (diff c a) (Cos a)
+diff c (Sin f) = Mul (diff c f) (Cos f)
 -- cos(f(x)) -> -( f'(x) * sin(f(x)) )
-diff c (Cos a) = Neg $ Mul (diff c a) (Sin a)
+diff c (Cos f) = Neg $ Mul (diff c f) (Sin f)
 -- tg(f(x)) -> f'(x) / ( cos^2(f(x)) )
-diff c (Tan a) = Div (diff c a) (Pow (Cos a) (Const 2))
+diff c (Tan f) = Div (diff c f) (Pow (Cos f) (Const 2))
 -- exp(f(x)) -> f'(x) * exp(f(x))
-diff c (Exp a) = Mul (diff c a) (Exp a)
+diff c (Exp f) = Mul (diff c f) (Exp f)
 -- log(f(x)) -> f'(x) / f(x)
-diff c (Log a) = Div (diff c a) a
+diff c (Log f) = Div (diff c f) f
 
 --
 -- TOKENIZATION
@@ -119,11 +120,12 @@ functions = ["sin", "cos", "tg", "exp", "ln"]
 
 readNumber :: String -> Either String (Double, String)
 readNumber s =
-  if head n == '0' && length n > 1
-    then Left "Numbers are not allowed to begin with 0"
+  if beginsWithZero || head s == '.' || last s == '.'
+    then Left "Invalid number read"
     else Right (read n :: Double, drop (length n) s)
   where
     n = takeWhile (`elem` '.' : digits) s
+    beginsWithZero = head n == '0' && length n > 1
 
 startsWith :: String -> String -> Bool
 startsWith "" _ = False
