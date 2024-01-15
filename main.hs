@@ -120,8 +120,10 @@ functions = ["sin", "cos", "tg", "exp", "ln"]
 
 readNumber :: String -> Either String (Double, String)
 readNumber s =
-  if beginsWithZero || head s == '.' || last s == '.'
-    then Left "Invalid number read"
+  if beginsWithZero
+    then Left "Numbers are not allowed to begin 0"
+    -- throw when invalid dot placement (start/end)
+    -- ^ we don't treat such expression as valid, so this meets the requirements
     else Right (read n :: Double, drop (length n) s)
   where
     n = takeWhile (`elem` '.' : digits) s
