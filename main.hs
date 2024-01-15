@@ -130,9 +130,11 @@ readNumber s =
     beginsWithZero = head n == '0' && length n > 1
 
 startsWith :: String -> String -> Bool
-startsWith "" _ = False
 startsWith _ "" = True
-startsWith str with = (head str == head with) && startsWith (tail str) (tail with)
+startsWith "" _ = False
+startsWith (s:str') (w:with')
+  | s == w = startsWith str' with'
+  | otherwise = False
 
 readFunction :: String -> Either String (String, String)
 readFunction s =
@@ -140,7 +142,7 @@ readFunction s =
     then Left $ "Could not match function '" ++ takeWhile (`elem` characters) s ++ "'"
     else Right (fun, rest)
   where
-    funs = filter (\x -> s `startsWith` x) functions -- will match exactly one at most
+    funs = filter (\x -> s `startsWith` x) functions -- will match at most one
     fun = head funs
     rest = drop (length fun) s
 
